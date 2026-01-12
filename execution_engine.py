@@ -136,6 +136,11 @@ def run_strategy_cycle():
             previous_rsi = rsi_series.iloc[-2]
             
             trend = "BULL" if current_price > current_ema else "BEAR"
+
+            if current_rsi < 35 or current_rsi > 65:
+                print(f"   🔎 WATCH: {pair_name} is close! (Prev: {previous_rsi:.1f} -> Curr: {current_rsi:.1f})")
+            
+            trend_icon = "📈" if trend == "BULL" else "📉"
             
             print(f"   {pair_name} | Px: {current_price:.4f} | RSI: {current_rsi:.1f} | EMA: {current_ema:.4f} ({trend})")
 
