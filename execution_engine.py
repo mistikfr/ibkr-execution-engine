@@ -111,7 +111,7 @@ def run_strategy_cycle():
             # 2. INGEST DATA (Snapshot Mode)
             # Fetches 2 days of history to seed the EMA-200
             bars = ib.reqHistoricalData(
-                contract, endDateTime='', durationStr='2 D', 
+                contract, endDateTime='', durationStr='5 D', 
                 barSizeSetting=TIMEFRAME, whatToShow='MIDPOINT', useRTH=False,
                 keepUpToDate=False, timeout=4 
             )
