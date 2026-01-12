@@ -29,7 +29,7 @@ TRADE_ALLOCATION = 0.33    # Risk Sizing: 33% of Equity (Soros Standard)
 SYMBOLS_MAP = {
     'EURUSD': 12087792,
     'GBPUSD': 12087797,
-    'USDJPY': 12087823
+    'USDJPY': 15016059
 }
 
 # 3. CONNECTIVITY
