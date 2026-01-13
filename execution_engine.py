@@ -1,6 +1,6 @@
 # ==============================================================================
-# Module: Quantitative Execution Engine
-# Strategy: Trend-Filtered Mean Reversion (EMA-200 + RSI-14)
+# Module: Quantitative Execution Engine (The Hustler v2.1)
+# Strategy: Bi-Directional Trend-Filtered Mean Reversion (EMA-200 + RSI-14)
 # Architecture: Snapshot Polling (Latency Optimized & Crash-Proof)
 # Interface: Interactive Brokers API (ib_insync)
 # License: MIT License
@@ -18,9 +18,11 @@ from ib_insync import *
 # 1. STRATEGY PARAMETERS
 TIMEFRAME = '15 mins'
 RSI_PERIOD = 14
-EMA_PERIOD = 200           # Trend Filter: Only Buy if Price > 200 EMA
-BUY_THRESHOLD = 30         # Oversold Entry Signal
-SELL_THRESHOLD = 70        # Overbought Exit Signal
+EMA_PERIOD = 200           # Soros Filter: Trend direction detector
+BUY_ENTRY = 30             # Enter Long below this
+SELL_ENTRY = 70            # Enter Short above this
+EXIT_LONG_TARGET = 65      # Take Profit on Longs here (Secure the bag early)
+EXIT_SHORT_TARGET = 35     # Take Profit on Shorts here
 TRADE_ALLOCATION = 0.33    # Risk Sizing: 33% of Equity (Soros Standard)
 
 # 2. LATENCY OPTIMIZATION (PRE-MAPPED CONTRACTS)
@@ -70,20 +72,27 @@ def get_cash_balance():
 def execute_trade(contract, pair_name, action, price, size=None):
     """
     Routes orders to the exchange.
-    Uses 'GTC' (Good Till Cancelled) to ensure order persistence.
+    If 'size' is None -> Calculates 33% Entry Size. 
+    If 'size' is Value -> Exits that specific amount.
     """
-    if action == "BUY":
+    qty = 0
+    
+    # 1. ENTRY LOGIC (Calculate Size)
+    if size is None:
         total_cash = get_cash_balance()
-        if total_cash < 2000:
+        if total_cash < 1000:
              print(f"   ⚠️ SKIPPED: Insufficient liquidity (${total_cash:.2f})")
              return
         
-        # Dynamic Sizing
+        # Dynamic Sizing: 33% of account
         spendable = total_cash * TRADE_ALLOCATION
+        
         if pair_name.startswith('USD'):
             qty = int(spendable) 
         else:
             qty = int(spendable / price)
+    
+    # 2. EXIT LOGIC (Use Existing Size)
     else:
         qty = size
 
@@ -92,6 +101,44 @@ def execute_trade(contract, pair_name, action, price, size=None):
         order = MarketOrder(action, qty, tif='GTC') 
         ib.placeOrder(contract, order)
         print("   ✅ Order Routed Successfully.")
+
+def get_trade_signal(rsi_prev, rsi_curr, trend, current_pos_size):
+    """
+    ENTRIES: Strict (30 / 70) - Only enter on strong signals.
+    EXITS:   Easier (35 / 65) - Secure profits before the reversal.
+    """
+    signal = "HOLD"
+    
+    # --- LOGIC 1: ENTRIES (Open New Positions) ---
+    if current_pos_size == 0:
+        
+        # LONG ENTRY: RSI Crosses UP past 30 + BULL Trend
+        if rsi_prev < BUY_ENTRY and rsi_curr >= BUY_ENTRY:
+            if trend == "BULL":
+                signal = "ENTRY_LONG"
+            else:
+                print("   🛡️ Filtered: Buy signal ignored (Bear Trend)")
+        
+        # SHORT ENTRY: RSI Crosses DOWN past 70 + BEAR Trend
+        elif rsi_prev > SELL_ENTRY and rsi_curr <= SELL_ENTRY:
+            if trend == "BEAR":
+                signal = "ENTRY_SHORT"
+            else:
+                print("   🛡️ Filtered: Short signal ignored (Bull Trend)")
+
+    # --- LOGIC 2: EXITS (Close Existing Positions) ---
+    else:
+        # EXIT LONG: Take profit at 65 (Don't wait for 70)
+        if current_pos_size > 0: 
+            if rsi_curr >= EXIT_LONG_TARGET:
+                signal = "EXIT_LONG"
+        
+        # EXIT SHORT: Take profit at 35 (Don't wait for 30)
+        elif current_pos_size < 0:
+            if rsi_curr <= EXIT_SHORT_TARGET:
+                signal = "EXIT_SHORT"
+                
+    return signal
 
 def run_strategy_cycle():
     """
@@ -109,7 +156,7 @@ def run_strategy_cycle():
             contract.exchange = 'IDEALPRO'
             
             # 2. INGEST DATA (Snapshot Mode)
-            # Fetches 2 days of history to seed the EMA-200
+            # Fetches 5 days of history to seed the EMA-200
             bars = ib.reqHistoricalData(
                 contract, endDateTime='', durationStr='5 D', 
                 barSizeSetting=TIMEFRAME, whatToShow='MIDPOINT', useRTH=False,
@@ -123,23 +170,17 @@ def run_strategy_cycle():
             df = util.df(bars)
             rsi_series, ema_series = calculate_indicators(df)
             
-            if rsi_series is None:
+            if rsi_series is None or len(rsi_series) < 2:
                 print(f"   ⏳ {pair_name}: Buffering Data for EMA-200...")
                 continue
 
             # 3. ANALYZE MARKET STATE
             current_price = bars[-1].close
             current_rsi = rsi_series.iloc[-1]
+            previous_rsi = rsi_series.iloc[-2]
             current_ema = ema_series.iloc[-1]
             
-            if len(rsi_series) < 2: continue
-            previous_rsi = rsi_series.iloc[-2]
-            
             trend = "BULL" if current_price > current_ema else "BEAR"
-
-            if current_rsi < 35 or current_rsi > 65:
-                print(f"   🔎 WATCH: {pair_name} is close! (Prev: {previous_rsi:.1f} -> Curr: {current_rsi:.1f})")
-            
             trend_icon = "📈" if trend == "BULL" else "📉"
             
             print(f"   {pair_name} | Px: {current_price:.4f} | RSI: {current_rsi:.1f} | EMA: {current_ema:.4f} ({trend})")
@@ -150,23 +191,23 @@ def run_strategy_cycle():
             position_size = current_pos.position if current_pos else 0
 
             # 5. EXECUTION LOGIC
-            
-            # ENTRY: RSI Dip (Mean Reversion) + Bull Trend (Trend Following)
-            if previous_rsi < BUY_THRESHOLD and current_rsi >= BUY_THRESHOLD:
-                if trend == "BULL":
-                    print(f"   ✅ SIGNAL: {pair_name} (Bullish Dip)")
-                    if position_size == 0:
-                        execute_trade(contract, pair_name, "BUY", current_price)
-                    else:
-                        print(f"   ⚠️ Position Limit Reached. Ignoring.")
-                else:
-                    print(f"   🛡️ FILTERED: RSI Signal rejected by Trend Filter.")
+            signal = get_trade_signal(previous_rsi, current_rsi, trend, position_size)
 
-            # EXIT: RSI Overbought
-            elif previous_rsi > SELL_THRESHOLD and current_rsi <= SELL_THRESHOLD:
-                if position_size > 0:
-                    print(f"   🔻 SIGNAL: {pair_name} (Profit Taking)")
-                    execute_trade(contract, pair_name, "SELL", current_price, size=abs(position_size))
+            if signal == "ENTRY_LONG":
+                print(f"   ✅ SIGNAL: {pair_name} (Bullish Dip)")
+                execute_trade(contract, pair_name, "BUY", current_price, size=None)
+
+            elif signal == "ENTRY_SHORT":
+                print(f"   ✅ SIGNAL: {pair_name} (Bearish Peak)")
+                execute_trade(contract, pair_name, "SELL", current_price, size=None)
+
+            elif signal == "EXIT_LONG":
+                print(f"   🔻 SIGNAL: {pair_name} (Take Profit: RSI > {EXIT_LONG_TARGET})")
+                execute_trade(contract, pair_name, "SELL", current_price, size=abs(position_size))
+
+            elif signal == "EXIT_SHORT":
+                print(f"   🔻 SIGNAL: {pair_name} (Take Profit: RSI < {EXIT_SHORT_TARGET})")
+                execute_trade(contract, pair_name, "BUY", current_price, size=abs(position_size))
 
         except Exception as e:
             print(f"   ❌ EXCEPTION in {pair_name}: {e}")
@@ -175,7 +216,7 @@ def run_strategy_cycle():
 
 # --- MAIN ENTRY POINT ---
 def main():
-    print("--- 🛠️ QUANT EXECUTION ENGINE v1.0 (SNAPSHOT MODE) ---")
+    print("--- 🛠️ QUANT EXECUTION ENGINE v2.1 (LONG & SHORT ACTIVATED) ---")
     
     try:
         if not ib.isConnected():
