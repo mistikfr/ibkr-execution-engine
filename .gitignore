@@ -1,12 +1,10 @@
-# Byte-compiled / optimized / DLL files
+# --- Python & Compiled Files ---
 __pycache__/
 *.py[codz]
 *$py.class
-
-# C extensions
 *.so
 
-# Distribution / packaging
+# --- Distribution / Packaging ---
 .Python
 build/
 develop-eggs/
@@ -26,15 +24,11 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# PyInstaller
-*.manifest
-*.spec
-
-# Installer logs
+# --- Installer Logs ---
 pip-log.txt
 pip-delete-this-directory.txt
 
-# Unit test / coverage reports
+# --- Unit Test / Coverage ---
 htmlcov/
 .tox/
 .nox/
@@ -49,14 +43,44 @@ coverage.xml
 .pytest_cache/
 cover/
 
-# Environments
+# --- Frameworks (Django/Flask/Scrapy) ---
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+instance/
+.webassets-cache
+.scrapy
+
+# --- Documentation ---
+docs/_build/
+/site
+
+# --- Environments (Virtualenvs) ---
 .env
+.envrc
 .venv
 env/
 venv/
 ENV/
+env.bak/
+venv.bak/
 
-# IDEs
-.idea/
+# --- IDEs & Editors ---
+# VS Code
 .vscode/
+# PyCharm / IntelliJ
+.idea/
+# Mac OS
+.DS_Store
+# Vim
 *.swp
+
+# --- PyInstaller (Critical for your .exe builds) ---
+*.manifest
+*.spec
+
+# --- IBKR & Trading Logs ---
+# You don't want to commit gigabytes of log files
+*.log
+tws_api_logs/
