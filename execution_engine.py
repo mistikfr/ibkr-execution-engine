@@ -1,5 +1,5 @@
 # ==============================================================================
-# Module: Quantitative Execution Engine (The Hustler v2.3)
+# Module: Quantitative Execution Engine (The Hustler v2.8)
 # Strategy: Trend-Filtered Mean Reversion + Panic Override Protocol
 # Architecture: Snapshot Polling (Latency Optimized)
 # Interface: Interactive Brokers API (ib_insync)
