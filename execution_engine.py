@@ -12,24 +12,26 @@ import datetime
 import pandas as pd
 from ib_insync import *
 
-# --- 🧠 CONFIGURATION: THE HUSTLER v2.3 ---
+# --- 🧠 CONFIGURATION: THE HUSTLER v2.8 (Silent Pro) ---
 
 # 1. STRATEGY SETTINGS
 TIMEFRAME = '15 mins'
 RSI_PERIOD = 14
-EMA_PERIOD = 200           # Soros Filter: Trend direction detector
+EMA_PERIOD = 200           # Soros Filter
 BUY_ENTRY = 30             # Enter Long below this
 SELL_ENTRY = 70            # Enter Short above this
-EXIT_LONG_TARGET = 65      # Take Profit on Longs here 
-EXIT_SHORT_TARGET = 35     # Take Profit on Shorts here
-TRADE_ALLOCATION = 0.33    # Bet size: 33% of available cash
+EXIT_LONG_TARGET = 65      # Take Profit on Longs
+EXIT_SHORT_TARGET = 35     # Take Profit on Shorts
+TRADE_ALLOCATION = 0.33    # 33% of Equity
 
-# 2. SAFETY SWITCH
-# 'BOTH'      = Allow Buys and Sells (Risky)
-# 'LONG_ONLY' = Allow Buys only. Block all Shorts.
+# 2. SAFETY SWITCHES
 TRADING_MODE = 'LONG_ONLY' 
 
-# 3. INSTRUMENT MAP (FX Pairs)
+# Trend Buffer: 0.001 = 0.1% (approx 10-15 pips).
+# Requires Price to be > EMA + 0.1% to confirm a Strong Bull trend.
+TREND_BUFFER_PCT = 0.001 
+
+# 3. INSTRUMENT MAP
 SYMBOLS_MAP = {
     'EURUSD': 12087792,
     'GBPUSD': 12087797,
@@ -38,7 +40,7 @@ SYMBOLS_MAP = {
 
 # 4. CONNECTIVITY
 TWS_HOST = '127.0.0.1'
-TWS_PORT = 7497            # Paper Trading Port (Use 7496 for Live)
+TWS_PORT = 7497            
 CLIENT_ID = random.randint(1000, 9999) 
 
 ib = IB()
@@ -50,49 +52,33 @@ def calculate_indicators(df):
     if df is None or len(df) < EMA_PERIOD + 1:
         return None, None
     
-    # RSI Calculation
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=RSI_PERIOD).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=RSI_PERIOD).mean()
     rs = gain / loss
     rsi = 100 - (100 / (1 + rs))
-    
-    # EMA Calculation
     ema = df['close'].ewm(span=EMA_PERIOD, adjust=False).mean()
-    
     return rsi, ema
 
 def get_cash_balance():
-    """Checks USD cash balance."""
     vals = ib.accountValues()
     cash_obj = next((v for v in vals if v.tag == 'TotalCashValue' and v.currency == 'USD'), None)
     return float(cash_obj.value) if cash_obj else 0.0
 
 def execute_trade(contract, pair_name, action, price, size=None):
-    """
-    Places the trade. 
-    If 'size' is None -> Calculates 33% Entry Size. 
-    If 'size' is Value -> Exits that specific amount.
-    """
     qty = 0
     
-    # 1. ENTRY LOGIC (Calculate Size)
+    # 1. ENTRY LOGIC
     if size is None:
         total_cash = get_cash_balance()
         if total_cash < 1000:
              print(f"   ⚠️ SKIPPED: Low Cash (${total_cash:.2f})")
              return
-        
-        # Soros Sizing: 33% of account
         spendable = total_cash * TRADE_ALLOCATION
-        
-        # Adjust for pair logic (USD base vs Quote)
-        if pair_name.startswith('USD'):
-            qty = int(spendable) 
-        else:
-            qty = int(spendable / price)
+        if pair_name.startswith('USD'): qty = int(spendable) 
+        else: qty = int(spendable / price)
     
-    # 2. EXIT LOGIC (Use Existing Size)
+    # 2. EXIT LOGIC
     else:
         qty = size
 
@@ -102,43 +88,48 @@ def execute_trade(contract, pair_name, action, price, size=None):
         ib.placeOrder(contract, order)
         print("   ✅ Order Sent.")
 
-def get_trade_signal(rsi_prev, rsi_curr, trend, current_pos_size):
-    """
-    ENTRIES: 
-      - Normal: Buy if Trend is BULL.
-      - Panic Override: Buy ANY Trend if RSI was < 15 (Crash Opportunity).
-    """
+def get_trade_signal(rsi_prev, rsi_curr, current_price, current_ema, current_pos_size):
+    """Decides based on RSI, EMA Trend, and Safety Buffer."""
     signal = "HOLD"
     
-    # --- LOGIC 1: ENTRIES (Open New Positions) ---
+    # Determine Strict Trend with Buffer
+    strong_bull_line = current_ema * (1 + TREND_BUFFER_PCT)
+    strong_bear_line = current_ema * (1 - TREND_BUFFER_PCT)
+
+    is_strong_bull = current_price > strong_bull_line
+    is_strong_bear = current_price < strong_bear_line
+    
+    # --- LOGIC 1: ENTRIES ---
     if current_pos_size == 0:
-        
         # LONG ENTRY
         if rsi_prev < BUY_ENTRY and rsi_curr >= BUY_ENTRY:
-            # RULE: Buy if Trend is BULL -OR- RSI was extreme panic (< 15)
-            if trend == "BULL" or rsi_prev < 15:
+            # SCENARIO A: Strong Trend (Buy the Dip)
+            if is_strong_bull:
                 signal = "ENTRY_LONG"
-                if trend == "BEAR":
-                    print("   ⚠️ PANIC OVERRIDE: Buying against the trend (RSI was < 15)")
+            # SCENARIO B: Panic Crash (Buy the Blood)
+            elif rsi_prev < 15:
+                signal = "ENTRY_LONG"
+                print("   ⚠️ PANIC OVERRIDE: Buying the crash (RSI < 15)")
+            # SCENARIO C: Weak Trend (The "Hugging EMA" Trap)
+            elif current_price > current_ema and not is_strong_bull:
+                print(f"   🛡️ Buffer Protect: Price too close to EMA ({current_price:.4f} vs {current_ema:.4f})")
             else:
-                print("   🛡️ Filtered: Buy signal ignored (Bear Trend & Not Panic)")
+                print("   🛡️ Filtered: Buy signal ignored (Bear Trend)")
         
-        # SHORT ENTRY (Only if mode allows)
+        # SHORT ENTRY (Blocked by LONG_ONLY mode usually)
         elif rsi_prev > SELL_ENTRY and rsi_curr <= SELL_ENTRY:
-            if TRADING_MODE == 'LONG_ONLY':
-                print("   🛡️ SAFETY SWITCH: Short Signal Blocked")
-            # Note: Panic Sell Override (rsi > 85) is implicitly blocked by LONG_ONLY mode above
-            elif trend == "BEAR" or rsi_prev > 85: 
-                signal = "ENTRY_SHORT"
-            else:
-                print("   🛡️ Filtered: Short signal ignored (Bull Trend)")
+            if TRADING_MODE == 'LONG_ONLY': pass 
+            elif is_strong_bear or rsi_prev > 85: signal = "ENTRY_SHORT"
+            else: print("   🛡️ Filtered: Short signal ignored (Bull Trend)")
 
-    # --- LOGIC 2: EXITS (Close Existing Positions) ---
+    # --- LOGIC 2: EXITS ---
     else:
-        if current_pos_size > 0 and rsi_curr >= EXIT_LONG_TARGET:
-            signal = "EXIT_LONG"
-        elif current_pos_size < 0 and rsi_curr <= EXIT_SHORT_TARGET:
-            signal = "EXIT_SHORT"
+        if current_pos_size > 0: 
+            if rsi_curr >= EXIT_LONG_TARGET:
+                signal = "EXIT_LONG"
+        elif current_pos_size < 0:
+            if rsi_curr <= EXIT_SHORT_TARGET:
+                signal = "EXIT_SHORT"
                 
     return signal
 
@@ -148,12 +139,10 @@ def run_strategy_cycle():
     
     for pair_name, con_id in SYMBOLS_MAP.items():
         try:
-            # 1. SETUP CONTRACT
             contract = Contract()
             contract.conId = con_id
             contract.exchange = 'IDEALPRO'
             
-            # 2. FETCH DATA (5 Days for EMA calculation)
             bars = ib.reqHistoricalData(
                 contract, endDateTime='', durationStr='5 D', 
                 barSizeSetting=TIMEFRAME, whatToShow='MIDPOINT', useRTH=False,
@@ -170,25 +159,20 @@ def run_strategy_cycle():
             if rsi_series is None or len(rsi_series) < 2:
                 continue
 
-            # 3. ANALYZE MARKET
             current_price = bars[-1].close
             current_rsi = rsi_series.iloc[-1]
             previous_rsi = rsi_series.iloc[-2]
             current_ema = ema_series.iloc[-1]
             
-            # Determine Trend
-            trend = "BULL" if current_price > current_ema else "BEAR"
-            trend_icon = "📈" if trend == "BULL" else "📉"
+            trend_icon = "📈" if current_price > current_ema else "📉"
             
             print(f"   {pair_name} | Px:{current_price:.4f} | RSI:{current_rsi:.1f} | EMA:{current_ema:.4f} {trend_icon}")
 
-            # 4. CHECK POSITIONS
             positions = ib.positions()
             current_pos = next((p for p in positions if p.contract.conId == con_id), None)
             position_size = current_pos.position if current_pos else 0
 
-            # 5. DECISION ENGINE
-            signal = get_trade_signal(previous_rsi, current_rsi, trend, position_size)
+            signal = get_trade_signal(previous_rsi, current_rsi, current_price, current_ema, position_size)
 
             if signal == "ENTRY_LONG":
                 print(f"   ✅ GOING LONG: {pair_name}")
@@ -209,12 +193,10 @@ def run_strategy_cycle():
         except Exception as e:
             print(f"   ❌ ERROR {pair_name}: {e}")
 
-    # Standard sleep to prevent API overload
-    print("--- 💤 Cycle Complete. Sleeping 10s... ---")
+    print("--- 💤 Cycle Complete. Sleeping 20s... ---")
 
-# --- MAIN STARTUP ---
 def main():
-    print("--- 🛠️ THE HUSTLER v2.3: LONG ONLY MODE ---")
+    print("--- 🛠️ THE HUSTLER v2.8: SILENT MODE ---")
     try:
         if not ib.isConnected():
             ib.connect(TWS_HOST, TWS_PORT, clientId=CLIENT_ID, timeout=5)
