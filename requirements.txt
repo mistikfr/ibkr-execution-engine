@@ -1,6 +1,2 @@
 ib_insync
 pandas
-sys
-random
-datetime
-time
