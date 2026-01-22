@@ -12,7 +12,7 @@ import datetime
 import pandas as pd
 from ib_insync import *
 
-# --- 🧠 CONFIGURATION: THE HUSTLER v2.8 (Silent Pro) ---
+# --- 🧠 CONFIGURATION: THE HUSTLER v2.9 (Silent Loop-Proof) ---
 
 # 1. STRATEGY SETTINGS
 TIMEFRAME = '15 mins'
@@ -65,9 +65,22 @@ def get_cash_balance():
     cash_obj = next((v for v in vals if v.tag == 'TotalCashValue' and v.currency == 'USD'), None)
     return float(cash_obj.value) if cash_obj else 0.0
 
+# --- LOOP PROTECTION LOGIC ---
+def has_open_order(contract):
+    """Checks if there is already a live order for this specific pair."""
+    trades = ib.openTrades()
+    for t in trades:
+        if t.contract.conId == contract.conId:
+            return True
+    return False
+
 def execute_trade(contract, pair_name, action, price, size=None):
+    # CRITICAL FIX: PREVENT DUPLICATES
+    if has_open_order(contract):
+        print(f"   ⚠️ SKIPPING {action}: Order already active for {pair_name}.")
+        return
+
     qty = 0
-    
     # 1. ENTRY LOGIC
     if size is None:
         total_cash = get_cash_balance()
@@ -137,6 +150,9 @@ def run_strategy_cycle():
     timestamp = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"\n--- 🔄 CYCLE START: {timestamp} ---")
     
+    # CRITICAL: Refresh Open Orders List
+    ib.reqOpenOrders()
+
     for pair_name, con_id in SYMBOLS_MAP.items():
         try:
             contract = Contract()
@@ -172,6 +188,11 @@ def run_strategy_cycle():
             current_pos = next((p for p in positions if p.contract.conId == con_id), None)
             position_size = current_pos.position if current_pos else 0
 
+            # CRITICAL: Check pending orders
+            if has_open_order(contract):
+                print(f"   ⏳ {pair_name}: Order Pending. Waiting for fill...")
+                continue
+
             signal = get_trade_signal(previous_rsi, current_rsi, current_price, current_ema, position_size)
 
             if signal == "ENTRY_LONG":
@@ -193,10 +214,11 @@ def run_strategy_cycle():
         except Exception as e:
             print(f"   ❌ ERROR {pair_name}: {e}")
 
+    # FIX: 20s Sleep mandated by IBKR
     print("--- 💤 Cycle Complete. Sleeping 20s... ---")
 
 def main():
-    print("--- 🛠️ THE HUSTLER v2.8: SILENT MODE ---")
+    print("--- 🛠️ THE HUSTLER v2.9: LOOP PROTECTION ---")
     try:
         if not ib.isConnected():
             ib.connect(TWS_HOST, TWS_PORT, clientId=CLIENT_ID, timeout=5)
@@ -207,7 +229,7 @@ def main():
 
     while True:
         run_strategy_cycle()
-        time.sleep(10) 
+        time.sleep(20) 
 
 if __name__ == '__main__':
     main()
