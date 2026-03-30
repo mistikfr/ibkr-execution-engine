@@ -1,6 +1,7 @@
 __pycache__/
 *.py[codz]
 *.log
+*.db
 .vscode/
 .idea/
 .env
